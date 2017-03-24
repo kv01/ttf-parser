@@ -1,0 +1,11 @@
+*.vcxproj
+*.filters
+*.sln
+*.db
+*.opendb
+[Dd]ebug*/
+[Rr]elease*/
+x64/
+.vs/
+
+fonts/
