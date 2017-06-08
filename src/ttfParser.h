@@ -21,8 +21,15 @@
 #ifdef __EMSCRIPTEN__
 #include "emscripten.h"
 #include "emscripten/val.h"
+#define TTFDEBUG_PRINT(x) {}
 #else
 #include <fstream>
+#ifdef _DEBUG
+#include <stdio.h>
+#define TTFDEBUG_PRINT(x) {printf((x));}
+#else
+#define TTFDEBUG_PRINT(x) {}
+#endif
 #endif
 
 namespace TTFFontParser {
@@ -516,6 +523,8 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 	uint16_t cmap_num_tables;
 	get2b(&cmap_num_tables, data + cmap_offset); cmap_offset += sizeof(uint16_t);
 
+	//std::map<uint16_t, uint32_t> glyph_reverse_map;
+
 	bool valid_cmap_table = false;
 	for (uint16_t i = 0; i < cmap_num_tables; i++) {
 		uint16_t platformID, encodingID;
@@ -524,7 +533,7 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 		get2b(&encodingID, data + cmap_offset); cmap_offset += sizeof(uint16_t);
 		get4b(&cmap_subtable_offset, data + cmap_offset); cmap_offset += sizeof(uint32_t);
 
-		if (platformID != 0 || encodingID != 3)
+		if (!((platformID == 0 && encodingID == 3) || (platformID == 3 && encodingID == 1)))
 			continue;
 
 		cmap_subtable_offset += cmap_table_entry->second.offsetPos;
@@ -557,6 +566,7 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 			if (idRangeOffset[j] == 0) {
 				for (uint32_t k = startCount[j]; k <= endCount[j]; k++) {
 					font_data->glyph_map[k] = k + idDelta[j];
+					//glyph_reverse_map[k + idDelta[j]] = k;
 				}
 			}
 			else {
@@ -565,6 +575,7 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 					uint32_t glyph_address_index_offset = idRangeOffset[j] + 2 * (k - startCount[j]) + glyph_address_offset;
 					uint16_t& glyph_map_value = font_data->glyph_map[k];
 					get2b(&glyph_map_value, data + glyph_address_index_offset);
+					//glyph_reverse_map[glyph_map_value] = k;
 					glyph_map_value += idDelta[j];
 				}
 			}
@@ -573,6 +584,8 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 		valid_cmap_table = true;
 		break;
 	}
+	if (!valid_cmap_table)
+		TTFDEBUG_PRINT("ttf-parser: No valid cmap table found\n");
 
 	HHEATable hhea_table;
 	auto hhea_table_entry = table_map.find("hhea");

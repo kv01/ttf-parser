@@ -1,5 +1,5 @@
 # ttf-parser
-A bare-bones, single header file ttf font parser for fast GPU font rendering.
+A bare-bones, single header file ttf font parser written in C++ for fast GPU font rendering.
 
 ## How to use
 * Define TTF_FONT_PARSER_IMPLEMENTATION in ONE cpp file to enable the implementation in the header file.  
