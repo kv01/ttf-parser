@@ -42,61 +42,18 @@ namespace TTFFontParser {
 		extern TTF_FONT_MEM_CPY get8b;
 		extern uint32_t little_endian_test;
 		extern bool endian_tested;
+
+		extern void get4b_be(void* dst, const char* src);
+		extern void get4b_le(void* dst, const char* src);
+		extern void get8b_be(void* dst, const char* src);
+		extern void get8b_le(void* dst, const char* src);
+		extern void get2b_be(void* dst, const char* src);
+		extern void get2b_le(void* dst, const char* src);
+		extern void get1b(void* dst, const char* src);
+		extern float to_2_14_float(int16_t value);
 #ifdef __cplusplus
 	}
 #endif
-
-	//Copying functions for big and little endian
-	void get4b_be(void* dst, const char* src) {
-		((uint8_t*)dst)[0] = src[0];
-		((uint8_t*)dst)[1] = src[1];
-		((uint8_t*)dst)[2] = src[2];
-		((uint8_t*)dst)[3] = src[3];
-	}
-	void get4b_le(void* dst, const char* src) {
-		((uint8_t*)dst)[0] = src[3];
-		((uint8_t*)dst)[1] = src[2];
-		((uint8_t*)dst)[2] = src[1];
-		((uint8_t*)dst)[3] = src[0];
-	}
-	void get8b_be(void * dst, const char * src)
-	{
-		((uint8_t*)dst)[0] = src[0];
-		((uint8_t*)dst)[1] = src[1];
-		((uint8_t*)dst)[2] = src[2];
-		((uint8_t*)dst)[3] = src[3];
-		((uint8_t*)dst)[4] = src[4];
-		((uint8_t*)dst)[5] = src[5];
-		((uint8_t*)dst)[6] = src[6];
-		((uint8_t*)dst)[7] = src[7];
-	}
-	void get8b_le(void * dst, const char * src)
-	{
-		((uint8_t*)dst)[0] = src[7];
-		((uint8_t*)dst)[1] = src[6];
-		((uint8_t*)dst)[2] = src[5];
-		((uint8_t*)dst)[3] = src[4];
-		((uint8_t*)dst)[4] = src[3];
-		((uint8_t*)dst)[5] = src[2];
-		((uint8_t*)dst)[6] = src[1];
-		((uint8_t*)dst)[7] = src[0];
-	}
-	void get2b_be(void* dst, const char* src) {
-		((uint8_t*)dst)[0] = src[0];
-		((uint8_t*)dst)[1] = src[1];
-	}
-	void get2b_le(void* dst, const char* src) {
-		((uint8_t*)dst)[0] = src[1];
-		((uint8_t*)dst)[1] = src[0];
-	}
-	void get1b(void * dst, const char * src)
-	{
-		((uint8_t*)dst)[0] = src[0];
-	}
-	float to_2_14_float(int16_t value)
-	{
-		return (float(value & 0x3fff) / float(1 << 14)) + (-2 * ((value >> 15) & 0x1) + ((value >> 14) & 0x1));
-	}
 		
 	struct Flags {
 		bool xDual;
@@ -341,8 +298,9 @@ namespace TTFFontParser {
 		std::vector<Curve> curves;
 	};
 	struct Glyph {
-		int16_t num_contours;
+		uint32_t character;
 		int16_t glyph_index;
+		int16_t num_contours;
 		std::vector<Path> path_list;
 		uint16_t advance_width;
 		int16_t left_side_bearing;
@@ -407,6 +365,7 @@ namespace TTFFontParser {
 #endif
 		extern int8_t parse_file(const char* file_name, FontData* font_data, TTF_FONT_PARSER_CALLBACK callback, void* args);
 		extern int8_t parse_data(const char* data, FontData* font_data);
+		extern int16_t get_kearning_offset(FontData* font_data, uint16_t left_glyph, uint16_t right_glyph);
 #ifdef __cplusplus
 	}
 #endif
@@ -421,7 +380,7 @@ namespace TTFFontParser {
 	bool endian_tested = false;
 };
 
-void recv_file_async_callback(void* args, void* data, int length) {
+void ttfparser_recv_file_async_callback(void* args, void* data, int length) {
 	TTFFontParser::FileAccessDataPack* data_pack = (TTFFontParser::FileAccessDataPack*)args;
 
 	if (length <= 0)
@@ -432,10 +391,62 @@ void recv_file_async_callback(void* args, void* data, int length) {
 	}
 	delete data_pack;
 }
-void recv_file_async_error_callback(void* arg) {
+void ttfparser_recv_file_async_error_callback(void* arg) {
 	TTFFontParser::FileAccessDataPack* data_pack = (TTFFontParser::FileAccessDataPack*)arg;
 	data_pack->callback(data_pack->args, data_pack->font_data, -1);
 	delete data_pack;
+}
+
+//Copying functions for big and little endian
+void TTFFontParser::get4b_be(void* dst, const char* src) {
+	((uint8_t*)dst)[0] = src[0];
+	((uint8_t*)dst)[1] = src[1];
+	((uint8_t*)dst)[2] = src[2];
+	((uint8_t*)dst)[3] = src[3];
+}
+void TTFFontParser::get4b_le(void* dst, const char* src) {
+	((uint8_t*)dst)[0] = src[3];
+	((uint8_t*)dst)[1] = src[2];
+	((uint8_t*)dst)[2] = src[1];
+	((uint8_t*)dst)[3] = src[0];
+}
+void TTFFontParser::get8b_be(void * dst, const char * src)
+{
+	((uint8_t*)dst)[0] = src[0];
+	((uint8_t*)dst)[1] = src[1];
+	((uint8_t*)dst)[2] = src[2];
+	((uint8_t*)dst)[3] = src[3];
+	((uint8_t*)dst)[4] = src[4];
+	((uint8_t*)dst)[5] = src[5];
+	((uint8_t*)dst)[6] = src[6];
+	((uint8_t*)dst)[7] = src[7];
+}
+void TTFFontParser::get8b_le(void * dst, const char * src)
+{
+	((uint8_t*)dst)[0] = src[7];
+	((uint8_t*)dst)[1] = src[6];
+	((uint8_t*)dst)[2] = src[5];
+	((uint8_t*)dst)[3] = src[4];
+	((uint8_t*)dst)[4] = src[3];
+	((uint8_t*)dst)[5] = src[2];
+	((uint8_t*)dst)[6] = src[1];
+	((uint8_t*)dst)[7] = src[0];
+}
+void TTFFontParser::get2b_be(void* dst, const char* src) {
+	((uint8_t*)dst)[0] = src[0];
+	((uint8_t*)dst)[1] = src[1];
+}
+void TTFFontParser::get2b_le(void* dst, const char* src) {
+	((uint8_t*)dst)[0] = src[1];
+	((uint8_t*)dst)[1] = src[0];
+}
+void TTFFontParser::get1b(void * dst, const char * src)
+{
+	((uint8_t*)dst)[0] = src[0];
+}
+float TTFFontParser::to_2_14_float(int16_t value)
+{
+	return (float(value & 0x3fff) / float(1 << 14)) + (-2 * ((value >> 15) & 0x1) + ((value >> 14) & 0x1));
 }
 
 int8_t TTFFontParser::parse_file(const char* file_name, TTFFontParser::FontData* font_data, TTFFontParser::TTF_FONT_PARSER_CALLBACK callback, void* args) {
@@ -444,7 +455,7 @@ int8_t TTFFontParser::parse_file(const char* file_name, TTFFontParser::FontData*
 	data_pack->font_data = font_data;
 	data_pack->callback = callback;
 	data_pack->args = args;
-	emscripten_async_wget_data(file_name, data_pack, recv_file_async_callback, recv_file_async_error_callback);
+	emscripten_async_wget_data(file_name, data_pack, ttfparser_recv_file_async_callback, ttfparser_recv_file_async_error_callback);
 	return 0;
 #else
 	std::string data_str;
@@ -542,7 +553,7 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 	uint16_t cmap_num_tables;
 	get2b(&cmap_num_tables, data + cmap_offset); cmap_offset += sizeof(uint16_t);
 
-	//std::map<uint16_t, uint32_t> glyph_reverse_map;
+	std::map<uint16_t, uint32_t> glyph_reverse_map;
 
 	bool valid_cmap_table = false;
 	for (uint16_t i = 0; i < cmap_num_tables; i++) {
@@ -585,7 +596,7 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 			if (idRangeOffset[j] == 0) {
 				for (uint32_t k = startCount[j]; k <= endCount[j]; k++) {
 					font_data->glyph_map[k] = k + idDelta[j];
-					//glyph_reverse_map[k + idDelta[j]] = k;
+					glyph_reverse_map[k + idDelta[j]] = k;
 				}
 			}
 			else {
@@ -594,7 +605,7 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 					uint32_t glyph_address_index_offset = idRangeOffset[j] + 2 * (k - startCount[j]) + glyph_address_offset;
 					uint16_t& glyph_map_value = font_data->glyph_map[k];
 					get2b(&glyph_map_value, data + glyph_address_index_offset);
-					//glyph_reverse_map[glyph_map_value] = k;
+					glyph_reverse_map[glyph_map_value] = k;
 					glyph_map_value += idDelta[j];
 				}
 			}
@@ -643,6 +654,7 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 
 		Glyph& current_glyph = font_data->glyphs[i];
 		current_glyph.glyph_index = i;
+		current_glyph.character = glyph_reverse_map[i];
 		current_glyph.num_triangles = 0;
 
 		if (i < hhea_table.numberOfHMetrics) {
@@ -866,7 +878,6 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 		else { //Composite glyph
 			for (auto compound_glyph_index = 0; compound_glyph_index < -current_glyph.num_contours; compound_glyph_index++) {
 				uint16_t glyf_flags, glyphIndex;
-				float x_scale = 1.0f, y_scale = 1.0f, scale01, scale10;
 				do {
 					get2b(&glyf_flags, data + current_offset); current_offset += sizeof(uint16_t);
 					get2b(&glyphIndex, data + current_offset); current_offset += sizeof(uint16_t);
@@ -1021,5 +1032,11 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 	font_data->meta_data.LineGap = hhea_table.LineGap;
 
 	return 0;
+}
+
+int16_t TTFFontParser::get_kearning_offset(FontData* font_data, uint16_t left_glyph, uint16_t right_glyph)
+{
+	auto kern_data = font_data->kearning_table.find((left_glyph << 16) | right_glyph);
+	return (kern_data == font_data->kearning_table.end()) ? 0 : kern_data->second;
 }
 #endif
