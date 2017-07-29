@@ -93,6 +93,10 @@ namespace TTFFontParser {
 	{
 		((uint8_t*)dst)[0] = src[0];
 	}
+	float to_2_14_float(int16_t value)
+	{
+		return (float(value & 0x3fff) / float(1 << 14)) + (-2 * ((value >> 15) & 0x1) + ((value >> 14) & 0x1));
+	}
 		
 	struct Flags {
 		bool xDual;
@@ -101,6 +105,20 @@ namespace TTFFontParser {
 		bool yShort;
 		bool repeat;
 		bool offCurve;
+	};
+	enum COMPOUND_GLYPH_FLAGS {
+		ARG_1_AND_2_ARE_WORDS = 0x0001,
+		ARGS_ARE_XY_VALUES = 0x0002,
+		ROUND_XY_TO_GRID = 0x0004,
+		WE_HAVE_A_SCALE = 0x0008,
+		MORE_COMPONENTS = 0x0020,
+		WE_HAVE_AN_X_AND_Y_SCALE = 0x0040,
+		WE_HAVE_A_TWO_BY_TWO = 0x0080,
+		WE_HAVE_INSTRUCTIONS = 0x0100,
+		USE_MY_METRICS = 0x0200,
+		OVERLAP_COMPOUND = 0x0400,
+		SCALED_COMPONENT_OFFSET = 0x0800,
+		UNSCALED_COMPONENT_OFFSET = 0x1000
 	};
 	struct TTFHeader
 	{
@@ -324,6 +342,7 @@ namespace TTFFontParser {
 	};
 	struct Glyph {
 		int16_t num_contours;
+		int16_t glyph_index;
 		std::vector<Path> path_list;
 		uint16_t advance_width;
 		int16_t left_side_bearing;
@@ -340,7 +359,7 @@ namespace TTFFontParser {
 		uint32_t file_name_hash;
 		std::string full_font_name;
 		std::string name_table[25];
-		std::vector<std::vector<int16_t>> kearning_table;
+		std::unordered_map<uint32_t, int16_t> kearning_table;
 		std::unordered_map<uint16_t, Glyph> glyphs;
 		std::map<uint32_t, uint16_t> glyph_map;
 		FontMetaData meta_data;
@@ -598,6 +617,11 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 		return -2;
 	uint32_t glyf_offset = glyf_table_entry->second.offsetPos;
 
+	auto kern_table_entry = table_map.find("kern");
+	uint32_t kern_offset = 0;
+	if (kern_table_entry != table_map.end())
+		kern_offset = kern_table_entry->second.offsetPos;
+
 	auto hmtx_table_entry = table_map.find("hmtx");
 	if (hmtx_table_entry == table_map.end())
 		return -2;
@@ -607,8 +631,18 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 	std::vector<std::vector<uint16_t>> point_index((max_profile.maxContours < 4096) ? max_profile.maxContours : 4096);
 	std::vector<uint16_t> points_per_contour((max_profile.maxContours < 4096) ? max_profile.maxContours : 4096);
 
-	for (uint16_t i = 0; i < max_profile.numGlyphs; i++) {
+	if (!max_profile.numGlyphs)
+		return -1;
+
+	bool* glyph_loaded = new bool[max_profile.numGlyphs];
+	memset(glyph_loaded, 0, sizeof(bool) * max_profile.numGlyphs);
+
+	auto parse_glyph = [&](uint16_t i, auto&& self) -> int8_t {
+		if (glyph_loaded[i] == true)
+			return 1;
+
 		Glyph& current_glyph = font_data->glyphs[i];
+		current_glyph.glyph_index = i;
 		current_glyph.num_triangles = 0;
 
 		if (i < hhea_table.numberOfHMetrics) {
@@ -619,10 +653,12 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 		else
 			current_glyph.advance_width = last_glyph_advance_width;
 
-		if (i != max_profile.numGlyphs - 1 && glyph_index[i] == glyph_index[i + 1])
-			continue;
+		if (i != max_profile.numGlyphs - 1 && glyph_index[i] == glyph_index[i + 1]) {
+			glyph_loaded[i] = true;
+			return -1;
+		}
 		if (glyph_index[i] >= end_of_glyf)
-			continue;
+			return -1;
 
 		uint32_t current_offset = glyf_offset + glyph_index[i];
 
@@ -826,8 +862,156 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 				current_glyph.num_triangles += (uint32_t)current_glyph.path_list[j].curves.size();
 			}
 		}
+
 		else { //Composite glyph
-			   //TODO: Push into composite glyph array and copy geometry after glyph loop
+			for (auto compound_glyph_index = 0; compound_glyph_index < -current_glyph.num_contours; compound_glyph_index++) {
+				uint16_t glyf_flags, glyphIndex;
+				float x_scale = 1.0f, y_scale = 1.0f, scale01, scale10;
+				do {
+					get2b(&glyf_flags, data + current_offset); current_offset += sizeof(uint16_t);
+					get2b(&glyphIndex, data + current_offset); current_offset += sizeof(uint16_t);
+
+					int16_t glyf_args1, glyf_args2;
+					int8_t glyf_args1_u8, glyf_args2_u8;
+					bool is_word = false;
+					if (glyf_flags & ARG_1_AND_2_ARE_WORDS) {
+						get2b(&glyf_args1, data + current_offset); current_offset += sizeof(int16_t);
+						get2b(&glyf_args2, data + current_offset); current_offset += sizeof(int16_t);
+						is_word = true;
+					}
+					else {
+						get1b(&glyf_args1_u8, data + current_offset); current_offset += sizeof(int8_t);
+						get1b(&glyf_args2_u8, data + current_offset); current_offset += sizeof(int8_t);
+					}
+
+					float composite_glyph_element_transformation[6] = { 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f };
+
+					if (glyf_flags & WE_HAVE_A_SCALE) {
+						int16_t xy_value;
+						get2b(&xy_value, data + current_offset); current_offset += sizeof(int16_t);
+						composite_glyph_element_transformation[0] = to_2_14_float(xy_value);
+						composite_glyph_element_transformation[3] = to_2_14_float(xy_value);
+					}
+					else if (glyf_flags & WE_HAVE_AN_X_AND_Y_SCALE) {
+						int16_t xy_values[2];
+						get2b(&xy_values[0], data + current_offset); current_offset += sizeof(int16_t);
+						get2b(&xy_values[1], data + current_offset); current_offset += sizeof(int16_t);
+						composite_glyph_element_transformation[0] = to_2_14_float(xy_values[0]);
+						composite_glyph_element_transformation[3] = to_2_14_float(xy_values[1]);
+					}
+					else if (glyf_flags & WE_HAVE_A_TWO_BY_TWO) {
+						int16_t xy_values[4];
+						get2b(&xy_values[0], data + current_offset); current_offset += sizeof(int16_t);
+						get2b(&xy_values[1], data + current_offset); current_offset += sizeof(int16_t);
+						get2b(&xy_values[2], data + current_offset); current_offset += sizeof(int16_t);
+						get2b(&xy_values[3], data + current_offset); current_offset += sizeof(int16_t);
+						composite_glyph_element_transformation[0] = to_2_14_float(xy_values[0]);
+						composite_glyph_element_transformation[1] = to_2_14_float(xy_values[1]);
+						composite_glyph_element_transformation[2] = to_2_14_float(xy_values[2]);
+						composite_glyph_element_transformation[3] = to_2_14_float(xy_values[3]);
+					}
+
+					bool matched_points = false;
+					if (glyf_flags & ARGS_ARE_XY_VALUES) {
+						composite_glyph_element_transformation[4] = is_word ? glyf_args1 : glyf_args1_u8;
+						composite_glyph_element_transformation[5] = is_word ? glyf_args2 : glyf_args2_u8;
+						if (glyf_flags & SCALED_COMPONENT_OFFSET) {
+							composite_glyph_element_transformation[4] *= composite_glyph_element_transformation[0];
+							composite_glyph_element_transformation[5] *= composite_glyph_element_transformation[3];
+						}
+					}
+					else {
+						matched_points = true;
+					}
+
+					//Skip instructions
+					if (glyf_flags & WE_HAVE_INSTRUCTIONS) {
+						uint16_t num_instructions = 0;
+						get2b(&num_instructions, data + current_offset); current_offset += sizeof(uint16_t);
+						current_offset += sizeof(uint8_t) * num_instructions;
+					}
+
+					if (glyph_loaded[glyphIndex] == false) {
+						if (self(glyphIndex, self) < 0) {
+							TTFDEBUG_PRINT("ttf-parser: bad glyph index %d in composite glyph\n", glyphIndex);
+							continue;
+						}
+					}
+					Glyph& composite_glyph_element = font_data->glyphs[glyphIndex];
+
+					auto transform_curve = [&composite_glyph_element_transformation](Curve& _in) -> Curve {
+						Curve out;
+						out.p0.x = _in.p0.x * composite_glyph_element_transformation[0] + _in.p0.y * composite_glyph_element_transformation[1] + composite_glyph_element_transformation[4];
+						out.p0.y = _in.p0.x * composite_glyph_element_transformation[2] + _in.p0.y * composite_glyph_element_transformation[3] + composite_glyph_element_transformation[5];
+						out.p1.x = _in.p1.x * composite_glyph_element_transformation[0] + _in.p1.y * composite_glyph_element_transformation[1] + composite_glyph_element_transformation[4];
+						out.p1.y = _in.p1.x * composite_glyph_element_transformation[2] + _in.p1.y * composite_glyph_element_transformation[3] + composite_glyph_element_transformation[5];
+						out.p2.x = _in.p2.x * composite_glyph_element_transformation[0] + _in.p2.y * composite_glyph_element_transformation[1] + composite_glyph_element_transformation[4];
+						out.p2.y = _in.p2.x * composite_glyph_element_transformation[2] + _in.p2.y * composite_glyph_element_transformation[3] + composite_glyph_element_transformation[5];
+						return out;
+					};
+
+					uint32_t composite_glyph_path_count = composite_glyph_element.path_list.size();
+					for (uint32_t glyph_point_index = 0; glyph_point_index < composite_glyph_path_count; glyph_point_index++) {
+						std::vector<Curve>& current_curves_list = composite_glyph_element.path_list[glyph_point_index].curves;
+						uint32_t composite_glyph_path_curves_count = current_curves_list.size();
+						Path new_path;
+						if (matched_points == false) {
+							for (uint32_t glyph_curves_point_index = 0; glyph_curves_point_index < composite_glyph_path_curves_count; glyph_curves_point_index++) {
+								new_path.curves.emplace_back(transform_curve(current_curves_list[glyph_curves_point_index]));
+							}
+						}
+						else {
+							TTFDEBUG_PRINT("ttf-parser: unsupported matched points in ttf composite glyph\n");
+							continue;
+						}
+						current_glyph.path_list.emplace_back(new_path);
+					}
+					current_glyph.num_triangles += composite_glyph_element.num_triangles;
+				} while (glyf_flags & MORE_COMPONENTS);
+			}
+		}
+		glyph_loaded[i] = true;
+		return 0;
+	};
+
+	for (uint16_t i = 0; i < max_profile.numGlyphs; i++) {
+		parse_glyph(i, parse_glyph);
+	}
+
+	delete[] glyph_loaded;
+
+	//Kearning table
+	if (kern_offset) {
+		uint32_t current_offset = kern_offset;
+		uint16_t kern_table_version, num_kern_subtables;
+		get2b(&kern_table_version, data + current_offset); current_offset += sizeof(uint16_t);
+		get2b(&num_kern_subtables, data + current_offset); current_offset += sizeof(uint16_t);
+		uint16_t kern_length = 0;
+		uint32_t kern_start_offset = current_offset;
+		for (uint16_t kern_subtable_index = 0; kern_subtable_index < num_kern_subtables; kern_subtable_index++) {
+			uint16_t kern_version, kern_converage;
+			current_offset = kern_start_offset + kern_length;
+			kern_start_offset = current_offset;
+			get2b(&kern_version, data + current_offset); current_offset += sizeof(uint16_t);
+			get2b(&kern_length, data + current_offset); current_offset += sizeof(uint16_t);
+			if (kern_version != 0) {
+				current_offset += kern_length - sizeof(uint16_t) * 3;
+				continue;
+			}
+			get2b(&kern_converage, data + current_offset); current_offset += sizeof(uint16_t);
+
+			uint16_t num_kern_pairs;
+			get2b(&num_kern_pairs, data + current_offset); current_offset += sizeof(uint16_t);
+			current_offset += sizeof(uint16_t) * 3;
+			for (uint16_t kern_index = 0; kern_index < num_kern_pairs; kern_index++) {
+				uint16_t kern_left, kern_right;
+				int16_t kern_value;
+				get2b(&kern_left, data + current_offset); current_offset += sizeof(uint16_t);
+				get2b(&kern_right, data + current_offset); current_offset += sizeof(uint16_t);
+				get2b(&kern_value, data + current_offset); current_offset += sizeof(int16_t);
+
+				font_data->kearning_table[(kern_left << 16) | kern_right] = kern_value;
+			}
 		}
 	}
 
