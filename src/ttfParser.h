@@ -21,14 +21,14 @@
 #ifdef __EMSCRIPTEN__
 #include "emscripten.h"
 #include "emscripten/val.h"
-#define TTFDEBUG_PRINT(x) {}
+#define TTFDEBUG_PRINT(...) {}
 #else
 #include <fstream>
 #ifdef _DEBUG
 #include <stdio.h>
-#define TTFDEBUG_PRINT(x) {printf((x));}
+#define TTFDEBUG_PRINT(...) printf(__VA_ARGS__)
 #else
-#define TTFDEBUG_PRINT(x) {}
+#define TTFDEBUG_PRINT(...) {}
 #endif
 #endif
 
