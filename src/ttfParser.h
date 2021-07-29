@@ -231,7 +231,8 @@ namespace TTFFontParser {
 				}
 				const auto current_name_record_index = uint64_t(nameRecord[i].platformID) << 32 | (uint64_t(nameRecord[i].encodingID) << 16) | (uint64_t(nameRecord[i].languageID));
 				auto& current_name_record = names[current_name_record_index];
-				current_name_record.resize(25);
+				if (!current_name_record.size())
+					current_name_record.resize(25);
 				current_name_record[nameRecord[i].nameID].assign(new_name_string, string_length);
 				delete[] new_name_string;
 			}
