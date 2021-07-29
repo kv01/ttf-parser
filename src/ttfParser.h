@@ -543,6 +543,12 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 
 	//iterate through all name table platform, encoding and language combinations
 	for (const auto& name_table_iterator : font_data->name_table) {
+		auto utf16_to_utf8 = [](const std::u16string& _utf16_string) {
+			std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> _utf16_to_utf8_;
+			std::string _utf8_string_ = _utf16_to_utf8_.to_bytes(_utf16_string);
+			return _utf8_string_;
+		};
+
 		FontData::FontNameData font_name_data;
 		font_name_data.from_uint64(name_table_iterator.first);
 		font_name_data.font_family = name_table_iterator.second[1];
