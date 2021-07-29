@@ -7,9 +7,6 @@
 *  A glyph is represented as a set of triangles (p_x, p1, p2) where p_x is the center of the glyph and
 *  p1 and p2 are sequential points on the curve. Quadratic splines will have 2 tiangles associated with them,
 *  (p_x, p1, p2) as before and (p1, p_c, p2) where p_c is the spline control point.
-*
-*  author: Kaushik Viswanathan <kaushik@ocutex.com>
-*  https://github.com/kv01/ttf-parser
 */
 
 #pragma once
@@ -213,16 +210,16 @@ namespace TTFFontParser {
 		uint16_t stringOffset;
 		std::vector<NameValue> nameRecord;
 
-		uint32_t parse(const char* data, uint32_t offset, std::string* names, uint16_t max_number_of_names = 25) {
+		uint32_t parse(const char* data, uint32_t offset, std::unordered_map<uint64_t, std::vector<std::string>>& names, uint16_t max_number_of_names = 25) {
 			uint32_t offset_start = offset;
 			get2b(&format, data + offset); offset += sizeof(uint16_t);
 			get2b(&count, data + offset); offset += sizeof(uint16_t);
 			get2b(&stringOffset, data + offset); offset += sizeof(uint16_t);
 			nameRecord.resize(count);
 			for (auto i = 0; i < count; i++) {
+				offset = nameRecord[i].parse(data, offset);
 				if (nameRecord[i].nameID > max_number_of_names)
 					continue;
-				offset = nameRecord[i].parse(data, offset);
 				char* new_name_string = new char[nameRecord[i].length];
 				memcpy(new_name_string, data + offset_start + stringOffset + nameRecord[i].offset_value, sizeof(char) * nameRecord[i].length);
 				uint16_t string_length = nameRecord[i].length;
@@ -232,7 +229,10 @@ namespace TTFFontParser {
 						new_name_string[j] = new_name_string[j * 2 + 1];
 					}
 				}
-				names[nameRecord[i].nameID].assign(new_name_string, string_length);
+				const auto current_name_record_index = uint64_t(nameRecord[i].platformID) << 32 | (uint64_t(nameRecord[i].encodingID) << 16) | (uint64_t(nameRecord[i].languageID));
+				auto& current_name_record = names[current_name_record_index];
+				current_name_record.resize(25);
+				current_name_record[nameRecord[i].nameID].assign(new_name_string, string_length);
 				delete[] new_name_string;
 			}
 			return offset;
@@ -315,8 +315,27 @@ namespace TTFFontParser {
 	};
 	struct FontData {
 		uint32_t file_name_hash;
-		std::string full_font_name;
-		std::string name_table[25];
+
+		struct FontNameData {
+			uint16_t platformID;
+			uint16_t encodingID;
+			uint16_t languageID;
+
+			std::string font_family;
+			std::string font_style;
+
+			uint64_t to_uint64() const {
+				return (uint64_t(platformID) << 32) | (uint64_t(encodingID) << 16) | uint64_t(languageID);
+			}
+			void from_uint64(uint64_t _value) {
+				platformID = uint16_t((_value >> 32) & 0xFFFF);
+				encodingID = uint16_t((_value >> 16) & 0xFFFF);
+				languageID = uint16_t(_value & 0xFFFF);
+			}
+		};
+		std::vector<FontNameData> font_names;
+
+		std::unordered_map<uint64_t, std::vector<std::string>> name_table; //name table per language or platform
 		std::unordered_map<uint32_t, int16_t> kearning_table;
 		std::unordered_map<uint16_t, Glyph> glyphs;
 		std::map<uint32_t, uint16_t> glyph_map;
@@ -522,7 +541,20 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 	NameTable name_table;
 	name_table.parse(data, name_table_entry->second.offsetPos, font_data->name_table);
 
-	font_data->full_font_name = font_data->name_table[1] + std::string(std::move(" ")) + font_data->name_table[2];
+	//iterate through all name table platform, encoding and language combinations
+	for (const auto& name_table_iterator : font_data->name_table) {
+		auto utf16_to_utf8 = [](const std::u16string& _utf16_string) {
+			std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> _utf16_to_utf8_;
+			std::string _utf8_string_ = _utf16_to_utf8_.to_bytes(_utf16_string);
+			return _utf8_string_;
+		};
+
+		FontData::FontNameData font_name_data;
+		font_name_data.from_uint64(name_table_iterator.first);
+		font_name_data.font_family = name_table_iterator.second[1];
+		font_name_data.font_style = name_table_iterator.second[2];
+		font_data->font_names.emplace_back(font_name_data);
+	}
 
 	auto loca_table_entry = table_map.find("loca");
 	if (loca_table_entry == table_map.end())
@@ -563,7 +595,7 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 		get2b(&encodingID, data + cmap_offset); cmap_offset += sizeof(uint16_t);
 		get4b(&cmap_subtable_offset, data + cmap_offset); cmap_offset += sizeof(uint32_t);
 
-		if (!((platformID == 0 && encodingID == 3) || (platformID == 3 && encodingID == 1)))
+		if (!((platformID == 0 && encodingID == 3) || (platformID == 3 && encodingID == 1))) //unsupported encoding
 			continue;
 
 		cmap_subtable_offset += cmap_table_entry->second.offsetPos;

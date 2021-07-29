@@ -1,5 +1,5 @@
 /*
-* Parsing example for ttf-parser (https://github.com/kv01/ttf-parser)
+* Example for ttf-parser
 * Change font_path to the ttf font to test
 */
 
@@ -22,7 +22,7 @@ void font_parsed(void* args, void* _font_data, int error) {
 	}
 	else {
 		TTFFontParser::FontData* font_data = (TTFFontParser::FontData*)_font_data;
-		printf("Font %s parsed\n", font_data->full_font_name.c_str());
+		printf("Font: %s %s parsed\n", font_data->font_names.begin()->font_family.c_str(), font_data->font_names.begin()->font_style.c_str());
 		printf("Number of glyphs: %d\n", font_data->glyphs.size());
 		*(uint8_t*)args = 1;
 	}
