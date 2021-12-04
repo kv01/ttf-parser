@@ -4,9 +4,7 @@
 *  Reads the minimum information needed to render antialiased glyph geometry as fast as possible
 *  Browser support using emscripten
 *
-*  A glyph is represented as a set of triangles (p_x, p1, p2) where p_x is the center of the glyph and
-*  p1 and p2 are sequential points on the curve. Quadratic splines will have 2 tiangles associated with them,
-*  (p_x, p1, p2) as before and (p1, p_c, p2) where p_c is the spline control point.
+*  A glyph is represented as a set of lines (p0, p1) and quadratic curves (p0, p1 with control point c)
 */
 
 #pragma once
@@ -291,12 +289,12 @@ namespace TTFFontParser {
 	struct Curve
 	{
 		float_v2 p0;
-		float_v2 p1;//Bezier control point or random off glyph point
-		float_v2 p2;
+		float_v2 p1;
+		float_v2 c; //control point if is_curve
 		bool is_curve;
 	};
 	struct Path {
-		std::vector<Curve> curves;
+		std::vector<Curve> geometry;
 	};
 	struct Glyph {
 		uint32_t character;
@@ -306,7 +304,7 @@ namespace TTFFontParser {
 		uint16_t advance_width;
 		int16_t left_side_bearing;
 		int16_t bounding_box[4];
-		uint32_t num_triangles;
+		float_v2 glyph_center;
 	};
 	struct FontMetaData {
 		uint16_t unitsPerEm;
@@ -315,8 +313,6 @@ namespace TTFFontParser {
 		int16_t LineGap;
 	};
 	struct FontData {
-		uint32_t file_name_hash;
-
 		struct FontNameData {
 			uint16_t platformID;
 			uint16_t encodingID;
@@ -337,38 +333,12 @@ namespace TTFFontParser {
 		std::vector<FontNameData> font_names;
 
 		std::unordered_map<uint64_t, std::vector<std::string>> name_table; //name table per language or platform
-		std::unordered_map<uint32_t, int16_t> kearning_table;
-		std::unordered_map<uint16_t, Glyph> glyphs;
-		std::map<uint32_t, uint16_t> glyph_map;
+
+		bool has_kearning_table = false;
+		std::unordered_map<uint64_t, int16_t> kearning_table;
+
+		std::unordered_map<uint32_t, Glyph> glyphs;
 		FontMetaData meta_data;
-		uint64_t last_used;
-	};
-	struct FontLineInfoData {
-		uint32_t string_start_index;
-		uint32_t string_end_index;
-		float_v2 offset_start;
-		float_v2 offset_end;
-		std::vector<Glyph*> glyph_index;
-	};
-	struct FontPositioningOutput {
-		std::vector<FontLineInfoData> line_positions;
-		uint32_t num_triangles;
-		//PixelPositioning alignment;
-		//BoundingRect bounding_rect;
-		uint32_t geometry;
-		uint16_t font_size;
-	};
-	struct FontPositioningOptions {
-		bool is_multiline;
-		bool is_word_preserve;
-		float line_height;
-		//PixelPositioning alignment;
-		//BoundingRect bounding_rect;
-		FontPositioningOptions() {
-			is_multiline = true;
-			is_word_preserve = true;
-			line_height = 1.0f;
-		}
 	};
 
 	//For async file read
@@ -385,7 +355,7 @@ namespace TTFFontParser {
 #endif
 		extern int8_t parse_file(const char* file_name, FontData* font_data, TTF_FONT_PARSER_CALLBACK callback, void* args);
 		extern int8_t parse_data(const char* data, FontData* font_data);
-		extern int16_t get_kearning_offset(FontData* font_data, uint16_t left_glyph, uint16_t right_glyph);
+		extern int16_t get_kearning_offset(FontData* font_data, uint32_t left_glyph, uint32_t right_glyph);
 #ifdef __cplusplus
 	}
 #endif
@@ -580,6 +550,7 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 	uint16_t cmap_num_tables;
 	get2b(&cmap_num_tables, data + cmap_offset); cmap_offset += sizeof(uint16_t);
 
+	std::map<uint32_t, uint16_t> glyph_map;
 	std::map<uint16_t, uint32_t> glyph_reverse_map;
 
 	bool valid_cmap_table = false;
@@ -622,7 +593,7 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 			get2b(&idRangeOffset[j], data + cmap_subtable_offset + sizeof(uint16_t) * segCount * 2);
 			if (idRangeOffset[j] == 0) {
 				for (uint32_t k = startCount[j]; k <= endCount[j]; k++) {
-					font_data->glyph_map[k] = k + idDelta[j];
+					glyph_map[k] = k + idDelta[j];
 					glyph_reverse_map[k + idDelta[j]] = k;
 				}
 			}
@@ -630,10 +601,10 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 				uint32_t glyph_address_offset = cmap_subtable_offset + sizeof(uint16_t) * segCount * 2; //idRangeOffset_ptr
 				for (uint32_t k = startCount[j]; k <= endCount[j]; k++) {
 					uint32_t glyph_address_index_offset = idRangeOffset[j] + 2 * (k - startCount[j]) + glyph_address_offset;
-					uint16_t& glyph_map_value = font_data->glyph_map[k];
+					uint16_t& glyph_map_value = glyph_map[k];
 					get2b(&glyph_map_value, data + glyph_address_index_offset);
-					glyph_reverse_map[glyph_map_value] = k;
 					glyph_map_value += idDelta[j];
+					glyph_reverse_map[glyph_map_value] = k;
 				}
 			}
 			cmap_subtable_offset += sizeof(uint16_t);
@@ -679,10 +650,11 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 		if (glyph_loaded[i] == true)
 			return 1;
 
-		Glyph& current_glyph = font_data->glyphs[i];
+		const auto glyph_character_index = glyph_reverse_map[i];
+
+		Glyph& current_glyph = font_data->glyphs[glyph_character_index];
 		current_glyph.glyph_index = i;
-		current_glyph.character = glyph_reverse_map[i];
-		current_glyph.num_triangles = 0;
+		current_glyph.character = glyph_character_index;
 
 		if (i < hhea_table.numberOfHMetrics) {
 			get2b(&current_glyph.advance_width, data + hmtx_offset + i * sizeof(uint32_t));
@@ -707,9 +679,8 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 		get2b(&current_glyph.bounding_box[2], data + current_offset); current_offset += sizeof(int16_t);
 		get2b(&current_glyph.bounding_box[3], data + current_offset); current_offset += sizeof(int16_t);
 
-		float_v2 glyph_center;
-		glyph_center.x = (current_glyph.bounding_box[0] + current_glyph.bounding_box[2]) / 2.0f;
-		glyph_center.y = (current_glyph.bounding_box[1] + current_glyph.bounding_box[3]) / 2.0f;
+		current_glyph.glyph_center.x = (current_glyph.bounding_box[0] + current_glyph.bounding_box[2]) / 2.0f;
+		current_glyph.glyph_center.y = (current_glyph.bounding_box[1] + current_glyph.bounding_box[3]) / 2.0f;
 
 		if (current_glyph.num_contours > 0) { //Simple glyph
 			std::vector<uint16_t> contour_end(current_glyph.num_contours);
@@ -831,14 +802,14 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 						curve.p1.x = p0.x;
 						curve.p1.y = p0.y;
 						if (flags1.offCurve) {
-							curve.p2.x = (p0.x + p1.x) / 2.0f;
-							curve.p2.y = (p0.y + p1.y) / 2.0f;
+							curve.c.x = (p0.x + p1.x) / 2.0f;
+							curve.c.y = (p0.y + p1.y) / 2.0f;
 
-							prev_point = curve.p2;
+							prev_point = curve.c;
 						}
 						else {
-							curve.p2.x = p1.x;
-							curve.p2.y = p1.y;
+							curve.c.x = p1.x;
+							curve.c.y = p1.y;
 							//No change to prev_point
 						}
 					}
@@ -847,8 +818,8 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 						curve.p0.y = p0.y;
 						curve.p1.x = p1.x;
 						curve.p1.y = p1.y;
-						curve.p2.x = glyph_center.x + 0.5f;
-						curve.p2.y = glyph_center.y + 0.5f;
+						curve.c.x = current_glyph.glyph_center.x;
+						curve.c.y = current_glyph.glyph_center.y;
 
 						prev_point.x = p0.x;
 						prev_point.y = p0.y;
@@ -862,10 +833,10 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 							curve.p0.y = p0.y;
 							curve.p1.x = p1.x;
 							curve.p1.y = p1.y;
-							curve.p2.x = (p1.x + p2.x) / 2.0f;
-							curve.p2.y = (p1.y + p2.y) / 2.0f;
+							curve.c.x = (p1.x + p2.x) / 2.0f;
+							curve.c.y = (p1.y + p2.y) / 2.0f;
 
-							prev_point = curve.p2;
+							prev_point = curve.c;
 
 						}
 						else {
@@ -873,8 +844,8 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 							curve.p0.y = p0.y;
 							curve.p1.x = p1.x;
 							curve.p1.y = p1.y;
-							curve.p2.x = p2.x;
-							curve.p2.y = p2.y;
+							curve.c.x = p2.x;
+							curve.c.y = p2.y;
 
 							prev_point.x = p0.x;
 							prev_point.y = p0.y;
@@ -882,23 +853,13 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 					}
 					if (flags0.offCurve || flags1.offCurve) {
 						curve.is_curve = true;
-						Curve line_curve;
-						line_curve.is_curve = false;
-						line_curve.p0.x = curve.p0.x;
-						line_curve.p0.y = curve.p0.y;
-						line_curve.p1.x = curve.p2.x;
-						line_curve.p1.y = curve.p2.y;
-						line_curve.p2.x = glyph_center.x + 0.5f;
-						line_curve.p2.y = glyph_center.y + 0.5f;
-						current_glyph.path_list[j].curves.push_back(std::move(line_curve));
 						if (flags0.offCurve == false)
 							k++;
 					}
 					else
 						curve.is_curve = false;
-					current_glyph.path_list[j].curves.push_back(std::move(curve));
+					current_glyph.path_list[j].geometry.push_back(std::move(curve));
 				}
-				current_glyph.num_triangles += (uint32_t)current_glyph.path_list[j].curves.size();
 			}
 		}
 
@@ -951,8 +912,8 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 
 					bool matched_points = false;
 					if (glyf_flags & ARGS_ARE_XY_VALUES) {
-						composite_glyph_element_transformation[4] = is_word ? glyf_args1 : glyf_args1_u8;
-						composite_glyph_element_transformation[5] = is_word ? glyf_args2 : glyf_args2_u8;
+						composite_glyph_element_transformation[4] = float(is_word ? glyf_args1 : glyf_args1_u8);
+						composite_glyph_element_transformation[5] = float(is_word ? glyf_args2 : glyf_args2_u8);
 						if (glyf_flags & SCALED_COMPONENT_OFFSET) {
 							composite_glyph_element_transformation[4] *= composite_glyph_element_transformation[0];
 							composite_glyph_element_transformation[5] *= composite_glyph_element_transformation[3];
@@ -975,7 +936,17 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 							continue;
 						}
 					}
-					Glyph& composite_glyph_element = font_data->glyphs[glyphIndex];
+					auto glyph_reverse_map_find = glyph_reverse_map.find(glyphIndex);
+					if (glyph_reverse_map_find == glyph_reverse_map.end()) {
+						TTFDEBUG_PRINT("ttf-parser: composite glyph of an unseen glyph %d\n", glyphIndex);
+						continue;
+					}
+					const auto glyph_character_index = glyph_reverse_map_find->second;
+					if (glyph_character_index == 0) {
+						//TTFDEBUG_PRINT("ttf-parser: null composite %d\n", glyphIndex);
+						continue;
+					}
+					Glyph& composite_glyph_element = font_data->glyphs[glyph_character_index];
 
 					auto transform_curve = [&composite_glyph_element_transformation](Curve& _in) -> Curve {
 						Curve out;
@@ -983,19 +954,19 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 						out.p0.y = _in.p0.x * composite_glyph_element_transformation[2] + _in.p0.y * composite_glyph_element_transformation[3] + composite_glyph_element_transformation[5];
 						out.p1.x = _in.p1.x * composite_glyph_element_transformation[0] + _in.p1.y * composite_glyph_element_transformation[1] + composite_glyph_element_transformation[4];
 						out.p1.y = _in.p1.x * composite_glyph_element_transformation[2] + _in.p1.y * composite_glyph_element_transformation[3] + composite_glyph_element_transformation[5];
-						out.p2.x = _in.p2.x * composite_glyph_element_transformation[0] + _in.p2.y * composite_glyph_element_transformation[1] + composite_glyph_element_transformation[4];
-						out.p2.y = _in.p2.x * composite_glyph_element_transformation[2] + _in.p2.y * composite_glyph_element_transformation[3] + composite_glyph_element_transformation[5];
+						out.c.x = _in.c.x * composite_glyph_element_transformation[0] + _in.c.y * composite_glyph_element_transformation[1] + composite_glyph_element_transformation[4];
+						out.c.y = _in.c.x * composite_glyph_element_transformation[2] + _in.c.y * composite_glyph_element_transformation[3] + composite_glyph_element_transformation[5];
 						return out;
 					};
 
-					uint32_t composite_glyph_path_count = composite_glyph_element.path_list.size();
+					uint32_t composite_glyph_path_count = uint32_t(composite_glyph_element.path_list.size());
 					for (uint32_t glyph_point_index = 0; glyph_point_index < composite_glyph_path_count; glyph_point_index++) {
-						std::vector<Curve>& current_curves_list = composite_glyph_element.path_list[glyph_point_index].curves;
-						uint32_t composite_glyph_path_curves_count = current_curves_list.size();
+						std::vector<Curve>& current_curves_list = composite_glyph_element.path_list[glyph_point_index].geometry;
+						uint32_t composite_glyph_path_curves_count = uint32_t(current_curves_list.size());
 						Path new_path;
 						if (matched_points == false) {
 							for (uint32_t glyph_curves_point_index = 0; glyph_curves_point_index < composite_glyph_path_curves_count; glyph_curves_point_index++) {
-								new_path.curves.emplace_back(transform_curve(current_curves_list[glyph_curves_point_index]));
+								new_path.geometry.emplace_back(transform_curve(current_curves_list[glyph_curves_point_index]));
 							}
 						}
 						else {
@@ -1004,7 +975,6 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 						}
 						current_glyph.path_list.emplace_back(new_path);
 					}
-					current_glyph.num_triangles += composite_glyph_element.num_triangles;
 				} while (glyf_flags & MORE_COMPONENTS);
 			}
 		}
@@ -1019,6 +989,7 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 	delete[] glyph_loaded;
 
 	//Kearning table
+	font_data->has_kearning_table = kern_offset ? true : false;
 	if (kern_offset) {
 		uint32_t current_offset = kern_offset;
 		uint16_t kern_table_version, num_kern_subtables;
@@ -1048,7 +1019,10 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 				get2b(&kern_right, data + current_offset); current_offset += sizeof(uint16_t);
 				get2b(&kern_value, data + current_offset); current_offset += sizeof(int16_t);
 
-				font_data->kearning_table[(kern_left << 16) | kern_right] = kern_value;
+				const uint32_t kern_left_character_index = glyph_reverse_map[kern_left];
+				const uint32_t kern_right_character_index = glyph_reverse_map[kern_right];
+
+				font_data->kearning_table[(uint64_t(kern_left_character_index) << 32) | uint64_t(kern_right_character_index)] = kern_value;
 			}
 		}
 	}
@@ -1061,9 +1035,13 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 	return 0;
 }
 
-int16_t TTFFontParser::get_kearning_offset(FontData* font_data, uint16_t left_glyph, uint16_t right_glyph)
+int16_t TTFFontParser::get_kearning_offset(FontData* font_data, uint32_t left_glyph, uint32_t right_glyph)
 {
-	auto kern_data = font_data->kearning_table.find((left_glyph << 16) | right_glyph);
-	return (kern_data == font_data->kearning_table.end()) ? 0 : kern_data->second;
+	if (font_data->has_kearning_table) {
+		auto kern_data = font_data->kearning_table.find((uint64_t(left_glyph) << 32) | uint64_t(right_glyph));
+		return (kern_data == font_data->kearning_table.end()) ? 0 : kern_data->second;
+	}
+	else
+		return 0;
 }
 #endif
