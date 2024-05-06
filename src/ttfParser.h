@@ -956,6 +956,7 @@ int8_t TTFFontParser::parse_data(const char* data, TTFFontParser::FontData* font
 						out.p1.y = _in.p1.x * composite_glyph_element_transformation[2] + _in.p1.y * composite_glyph_element_transformation[3] + composite_glyph_element_transformation[5];
 						out.c.x = _in.c.x * composite_glyph_element_transformation[0] + _in.c.y * composite_glyph_element_transformation[1] + composite_glyph_element_transformation[4];
 						out.c.y = _in.c.x * composite_glyph_element_transformation[2] + _in.c.y * composite_glyph_element_transformation[3] + composite_glyph_element_transformation[5];
+						out.is_curve = _in.is_curve;
 						return out;
 					};
 
